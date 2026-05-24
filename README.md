@@ -1,108 +1,43 @@
-# NL → SQL: Ask Your Database in English
+# NL → SQL
 
-A Streamlit app that turns plain-English questions into executable SQL using
-Google Gemini, runs them against the Chinook sample database, and shows the
-result with auto-generated charts. Includes a retry loop that asks the LLM to
-fix its own queries when they fail.
+Ask any database in plain English. An LLM writes the SQL, the app runs it, and if the query breaks it sends the error back to the LLM to fix itself.
 
-## Features
+**→ [Live demo](https://text-to-sql-mariam.streamlit.app)**
 
-- Natural-language → SQL via Gemini LLM reasoning
-- Automatic retry on malformed queries (sends the DB error back to the LLM)
-- SELECT-only safety filter (blocks INSERT/UPDATE/DELETE/DROP/etc.)
-- Real-time results as a DataFrame + auto bar chart for small result sets
-- Sidebar with live schema dump and example questions
+![Screenshot](screenshot.png)
 
-## Local setup
+---
 
-1. Clone the repo and `cd` into it.
+## What it does
 
-2. Create a virtual environment and install dependencies:
+- Type a question like *"which country has the most customers"* and get back a result table, the generated SQL, and an auto-chart
+- Comes preloaded with the Chinook sample database (a digital music store with 11 related tables)
+- Or upload your own CSVs — each file becomes a queryable table, and you can write questions that JOIN across them
 
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate          # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
+## How it works
 
-3. Get a free Gemini API key at https://aistudio.google.com/apikey
-   (verify the URL — Google has occasionally moved this page.)
+The interesting part isn't the LLM call — it's what happens when the LLM gets it wrong.
 
-4. Create your `.env`:
+1. **Generate** — question + schema → Gemini returns a SQL query
+2. **Filter** — reject anything that isn't a pure `SELECT` (no `DROP`, `UPDATE`, `INSERT`, multiple statements, etc.)
+3. **Execute** — run the query against SQLite
+4. **Repair** — if execution throws, feed the question, schema, broken SQL, and the database's error message back to the LLM and ask it to fix the query. Try up to 3 times.
+5. **Render** — show the result as a table, the final SQL in a code block, and an auto-generated bar chart when the shape fits
 
-   ```bash
-   cp .env.example .env
-   ```
-   Open `.env` and paste your key into `GOOGLE_API_KEY=...`.
+Every failed attempt is logged and viewable in the UI, so you can see exactly what the LLM tried and what error it hit.
 
-5. Download the Chinook database:
+## Tech
 
-   ```bash
-   python setup_db.py
-   ```
+Streamlit · Google Gemini · SQLite · pandas
 
-6. Run the app:
+## Run locally
 
-   ```bash
-   streamlit run app.py
-   ```
-
-   It should open at http://localhost:8501.
-
-## Deploying to Streamlit Community Cloud
-
-1. Push everything **except** `.env` to a public GitHub repo. The `.gitignore`
-   already excludes `.env`.
-
-2. Commit `chinook.db` — Streamlit Cloud needs it. (Don't run `setup_db.py`
-   on the cloud; just include the file in the repo. It's ~1 MB.)
-
-3. Go to https://share.streamlit.io, sign in with GitHub, click "New app",
-   and point it at your repo + `app.py`.
-
-4. In the app's Settings → Secrets, paste:
-
-   ```
-   GOOGLE_API_KEY = "your_actual_key_here"
-   ```
-
-   Streamlit Cloud exposes these as environment variables, so `os.getenv()`
-   in `llm.py` will pick it up the same way as your local `.env`.
-
-5. Click Deploy. First boot takes 1–3 minutes.
-
-## Project structure
-
+```bash
+git clone https://github.com/mariam-1209/text-to-sql.git
+cd text-to-sql
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python setup_db.py                                     # downloads Chinook
+echo "GOOGLE_API_KEY=your_key_here" > .env             # get a free key at aistudio.google.com/apikey
+streamlit run app.py
 ```
-nl-to-sql/
-├── app.py            # Streamlit UI + retry loop orchestration
-├── llm.py            # Gemini wrapper: generate_sql, fix_sql
-├── db.py             # Schema introspection, safety filter, query execution
-├── setup_db.py       # Downloads Chinook from GitHub
-├── requirements.txt
-├── .env.example
-├── .gitignore
-└── README.md
-```
-
-## How the retry loop works
-
-When you click Run:
-
-1. `generate_sql(question, schema)` produces a first SQL attempt.
-2. The safety filter checks it's a SELECT/WITH query with no modifying keywords.
-3. The query runs. If it succeeds, results display.
-4. If execution throws (or the safety check fails), the question + schema +
-   failing SQL + error message are sent back via `fix_sql(...)`, and the new
-   query is tried.
-5. This repeats up to `MAX_RETRIES` times (default 3). All failed attempts
-   are shown in a collapsed "details" panel above the results.
-
-## Known limitations
-
-- Free-tier Gemini has rate limits. Check current quotas at
-  https://ai.google.dev/pricing.
-- The schema dump fits in one prompt because Chinook is small (11 tables).
-  Larger databases would need schema-pruning before prompting.
-- The safety filter is keyword-based, not a full SQL parser; it's defense in
-  depth, not a security boundary. For production, use a read-only DB user.
