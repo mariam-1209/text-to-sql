@@ -4,9 +4,15 @@ Natural Language to SQL — Streamlit app (polished B&W)
 import html
 import streamlit as st
 from llm import generate_sql, fix_sql
-from db import get_schema, get_schema_structured, execute_query, is_safe_query
+from db import (
+    get_schema,
+    get_schema_structured,
+    execute_query,
+    is_safe_query,
+    build_db_from_csvs,
+)
 
-DB_PATH = "chinook.db"
+DEFAULT_DB_PATH = "chinook.db"
 MAX_RETRIES = 3
 
 st.set_page_config(
@@ -423,24 +429,15 @@ def render_table_card(name: str, columns: list) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# Load schema
+# Database selection — Chinook by default, or uploaded CSVs
 # ─────────────────────────────────────────────────────────────
-@st.cache_data
-def cached_schema_text():
-    return get_schema(DB_PATH)
+# `active_db` is what every query uses: either a path string (Chinook)
+# or a sqlite3 Connection (user-uploaded data).
+# We keep the user's uploaded connection in session_state so it survives reruns.
 
-
-@st.cache_data
-def cached_schema_struct():
-    return get_schema_structured(DB_PATH)
-
-
-try:
-    schema_text = cached_schema_text()
-    schema_struct = cached_schema_struct()
-except Exception as e:
-    st.error(f"Could not load database schema. Is `{DB_PATH}` present? Error: {e}")
-    st.stop()
+if "user_conn" not in st.session_state:
+    st.session_state["user_conn"] = None
+    st.session_state["user_tables_info"] = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -450,27 +447,101 @@ with st.sidebar:
     st.markdown('<div class="brand">NL → SQL</div>', unsafe_allow_html=True)
     st.markdown('<div class="brand-sub">powered by gemini</div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="sidebar-label">TRY THESE</div>', unsafe_allow_html=True)
-    examples = [
-        "Which 5 customers have spent the most money?",
-        "What are the top 10 best-selling tracks?",
-        "How many albums does each artist have? Show top 10.",
-        "What is the total revenue per country?",
-        "Which genre has the most tracks?",
-    ]
-    for ex in examples:
-        if st.button(ex, key=f"ex_{ex}", use_container_width=True):
-            st.session_state["question"] = ex
+    # ── Data source section ──
+    st.markdown('<div class="sidebar-label">YOUR DATA</div>', unsafe_allow_html=True)
+
+    uploaded = st.file_uploader(
+        "upload csv(s)",
+        type=["csv"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+        help="Upload one or more CSV files. Each becomes a queryable table. The filename becomes the table name.",
+    )
+
+    # If user uploads new files, rebuild the in-memory DB
+    if uploaded:
+        # only rebuild if the set of files actually changed
+        new_signature = tuple(sorted((f.name, f.size) for f in uploaded))
+        if st.session_state.get("user_files_signature") != new_signature:
+            try:
+                conn, info = build_db_from_csvs(uploaded)
+                st.session_state["user_conn"] = conn
+                st.session_state["user_tables_info"] = info
+                st.session_state["user_files_signature"] = new_signature
+                # clear any cached schema from the previous DB
+                st.cache_data.clear()
+            except Exception as e:
+                st.error(f"Failed to load CSVs: {e}")
+
+    # Show button to clear uploads and go back to Chinook
+    if st.session_state["user_conn"] is not None:
+        if st.button("← back to chinook demo", use_container_width=True, key="reset_db"):
+            st.session_state["user_conn"] = None
+            st.session_state["user_tables_info"] = None
+            st.session_state.pop("user_files_signature", None)
+            st.cache_data.clear()
+            st.rerun()
+
+    # ── Example questions (only shown for Chinook) ──
+    if st.session_state["user_conn"] is None:
+        st.markdown('<div class="sidebar-label">TRY THESE</div>', unsafe_allow_html=True)
+        examples = [
+            "Which 5 customers have spent the most money?",
+            "What are the top 10 best-selling tracks?",
+            "How many albums does each artist have? Show top 10.",
+            "What is the total revenue per country?",
+            "Which genre has the most tracks?",
+        ]
+        for ex in examples:
+            if st.button(ex, key=f"ex_{ex}", use_container_width=True):
+                st.session_state["question"] = ex
 
 
 # ─────────────────────────────────────────────────────────────
-# Hero
+# Decide which database is active for the rest of the page
 # ─────────────────────────────────────────────────────────────
+if st.session_state["user_conn"] is not None:
+    active_db = st.session_state["user_conn"]
+    db_mode = "user"
+else:
+    active_db = DEFAULT_DB_PATH
+    db_mode = "chinook"
+
+
+# ─────────────────────────────────────────────────────────────
+# Load schema
+# ─────────────────────────────────────────────────────────────
+try:
+    schema_text = get_schema(active_db)
+    schema_struct = get_schema_structured(active_db)
+except Exception as e:
+    st.error(f"Could not load database schema. Error: {e}")
+    st.stop()
+
+
+# Tell the user if their upload had any per-file issues
+if db_mode == "user" and st.session_state["user_tables_info"]:
+    bad = [t for t in st.session_state["user_tables_info"] if t.get("error")]
+    if bad:
+        with st.expander(f"⚠ {len(bad)} file(s) failed to load", expanded=True):
+            for t in bad:
+                st.markdown(f"**{t['filename']}** — {t['error']}")
+
+
+# ─────────────────────────────────────────────────────────────
+# Hero (dynamic based on which database is loaded)
+# ─────────────────────────────────────────────────────────────
+if db_mode == "chinook":
+    hero_subtitle = "ask the chinook music database in plain english"
+else:
+    n_tables = len([t for t in st.session_state["user_tables_info"] if not t.get("error")])
+    hero_subtitle = f"ask your data in plain english · {n_tables} table{'s' if n_tables != 1 else ''} loaded"
+
 st.markdown(
-    """
+    f"""
 <div class="hero">
     <h1>NL → SQL</h1>
-    <p>ask your database in plain english</p>
+    <p>{hero_subtitle}</p>
 </div>
 """,
     unsafe_allow_html=True,
@@ -533,7 +604,7 @@ if run and question.strip():
             continue
 
         try:
-            df = execute_query(sql, DB_PATH)
+            df = execute_query(sql, active_db)
             final_sql = sql
             break
         except Exception as e:
