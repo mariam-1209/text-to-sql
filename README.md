@@ -4,7 +4,11 @@ Ask any database in plain English. An LLM writes the SQL, the app runs it, and i
 
 **→ [Live demo](https://text-to-sql-mariam.streamlit.app)**
 
-![Screenshot](screenshot.png)
+![Querying uploaded CSVs with JOINs](screenshot-csv.png)
+  *Upload your own CSVs and ask questions across them.*
+
+  ![The default Chinook demo](screenshot-chinook.png)
+  *The default demo: query the Chinook music store database.*
 
 ---
 
